@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import scipy.linalg as la
 from quspin.operators import hamiltonian
@@ -6,9 +7,9 @@ from quspin.tools.Floquet import Floquet
 import matplotlib.pyplot as plt 
 
 # Initial parameters
-L, M = 6, 2
-g_per_J = 1.6
-d = 5000
+L, M = 6, 2 # Spin 0-5: System / Spin 6-7: Ancilla
+g_per_J = 0.4
+d = 500
 h = 1.65   
 theta = 0.11*np.pi
 
@@ -45,7 +46,7 @@ U_sys = np.kron(np.eye(dimA, dtype=complex), Floq.UF)  # Ancilla identity x Syst
 # 2. Ancilla Unitary Operators
 z_anc_list = [[1.0, i+L] for i in range(M)]
 Zanc = hamiltonian([["z", z_anc_list]], [], basis=basis, dtype=np.float64)
-U_Zanc = la.expm(-1j * (np.pi*h/2) * Zanc.toarray())
+U_Zanc = la.expm(1j * (np.pi*h/2) * Zanc.toarray())
 
 iswap_pairs = [[1.0, 0, L], [1.0, L-1, L+1]]
 H_iswap = hamiltonian([["xx", iswap_pairs], ["yy", iswap_pairs]], [], basis=basis, dtype=np.float64)
@@ -86,54 +87,50 @@ for n in range(d):
         E_list.append(E/E0)
         d_list.append(n)
 
-plt.plot(d_list, E_list, marker="o")
-plt.xlabel("cycle number, d", fontsize=16)
-plt.ylabel("E/E0", fontsize=16)
-plt.xticks(fontsize=16)
-plt.yticks(fontsize=16)
-#plt.legend(fontsize=16)
-plt.grid()
-plt.tight_layout()
-plt.savefig(f"TFIM_dissipative_gJ={g_per_J}_h={h}_theta={theta}.png", bbox_inches="tight")
+def store_data(npz_path, g_per_J, d_list, E_list):
+    
+    if os.path.exists(npz_path):
+        data = np.load(npz_path)
+        
+        hit = np.where(np.isclose(data["g_per_J"], g_per_J, atol=1e-12, rtol=0.0))[0]
+        if hit.size > 0:
+            print(f"Data for g/J = {g_per_J} already exists. Overwriting...")
+            idx = int(hit[0])
+            d_mat_new = data["d_mat"]; d_mat_new[idx, :] = d_list
+            E_mat_new = data["E_mat"]; E_mat_new[idx, :] = E_list
+            np.savez(npz_path, g_per_J=data["g_per_J"], d_mat=d_mat_new, E_mat=E_mat_new)
+        else:
+            g_per_J_new = np.array(data["g_per_J"].tolist() + [g_per_J])
+            d_mat_new = np.vstack([data["d_mat"], d_list])
+            E_mat_new = np.vstack([data["E_mat"], E_list])
+            np.savez(npz_path, g_per_J=g_per_J_new, d_mat=d_mat_new, E_mat=E_mat_new)
 
-'''
+    else:
+        g_per_J = np.array([g_per_J])
+        d_mat = np.array([d_list])
+        E_mat = np.array([E_list])
+        np.savez(npz_path, g_per_J=g_per_J, d_mat=d_mat, E_mat=E_mat)
 
-# Main Loop
-for zblock in [-1, +1]:
-    basis = spin_basis_1d(L=L, zblock=zblock)
+def plot_data(npz_path):
+    # Plotting
+    data = np.load(npz_path)
+    g_per_J = data["g_per_J"]
+    d_mat = data["d_mat"]
+    E_mat = data["E_mat"]
 
-    # Hamiltonians
-    H_overall = hamiltonian([["zz", J_zz], ["x", h_field]], [], basis=basis, dtype=np.float64)
-    Hzz = hamiltonian([["zz", J_zz]], [], basis=basis, dtype=np.float64)
-    Hx  = hamiltonian([["x",  h_field]], [], basis=basis, dtype=np.float64)
+    for i, g_val in enumerate(g_per_J):
+        plt.plot(d_mat[i], E_mat[i], marker="o", label=f"g/J={g_val}")
+    plt.xlabel("cycle number, d", fontsize=16)
+    plt.ylabel(r"$E/E_0$", fontsize=16)
+    plt.ylim(bottom=0.0)
+    plt.xticks(fontsize=16)
+    plt.yticks(fontsize=16)
+    plt.legend(fontsize=16)
+    plt.grid()
+    plt.tight_layout()
+    plt.legend(ncol=3, loc="upper center", bbox_to_anchor=(0.5, -0.15))
+    plt.savefig(f"TFIM_dissipative.png", bbox_inches="tight")
 
-    # Hamiltonian Diagonalization
-    EH, VH = H_overall.eigh()
-    EH_exp = -np.angle(np.exp(-1j * EH * T)) / T
-    idxH = np.argsort(EH_exp)
-    E_Ham[zblock] = EH_exp[idxH]
-    V_Ham[zblock] = VH[:, idxH]
-
-    # Floquet
-    evo_dict = {
-        "H_list": [2*Hzz, 2*Hx] * switch_n,  # step Hamiltonians
-        "dt_list": np.array([dt_zz, dt_x]*switch_n, dtype=np.float64)
-    }
-
-    Floq = Floquet(evo_dict, UF=True, VF=True, thetaF=True)
-
-    idxF = np.argsort(Floq.EF)
-    E_Floq[zblock] = Floq.EF[idxF]
-    V_Floq[zblock] = Floq.VF[:, idxF]
-
-    M = np.abs(V_Ham[zblock].conj().T @ V_Floq[zblock])**2
-    print(f"For zblock={zblock}, diagonal elements of Overlap are: {np.diag(M)}")  
-
-print(f"For zblock={zblock}, \nE_Ham: {E_Ham[zblock]}, \nE_Floq: {E_Floq[zblock]}")
-
-VHsub = V_Ham[1][:, 2:6]
-VFsub = V_Floq[1][:, 2:6]
-S = VHsub.conj().T @ VFsub              # (4,4)
-sv = np.linalg.svd(S, compute_uv=False) # singular values
-print("\nSingular values:", sv)
-'''
+npz_path = "cooling_log.npz"
+store_data(npz_path, g_per_J, d_list, E_list)
+plot_data(npz_path)
