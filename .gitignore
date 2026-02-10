@@ -1,0 +1,28 @@
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+.ipynb_checkpoints/
+
+# venv
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# outputs
+*.png
+*.pdf
+*.npy
+*.npz
+*.pt
+*.ckpt
+
+# secrets
+.env
+*.key
+*.pem
