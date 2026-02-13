@@ -8,10 +8,10 @@ import matplotlib.pyplot as plt
 
 # Initial parameters
 L, M = 6, 2 # Spin 0-5: System / Spin 6-7: Ancilla
-g_per_J = 0.4
-d = 500
-h = 1.65   
-theta = 0.11*np.pi
+g_per_J = 1.6
+d = 160
+h = 2.4 #(1.65/1.887) * np.sqrt(1.0 + g_per_J**2)
+theta = 0.14*np.pi
 
 Ltot = L + M
 J = 0.2
@@ -60,12 +60,12 @@ psiS /= np.linalg.norm(psiS)
 psiA0 = np.zeros(dimA, dtype=complex)
 psiA0[0] = 1.0
     
-psi_full = np.kron(psiA0, psiS)
+psi_full = np.kron(psiS, psiA0)
 rho = np.outer(psi_full, psi_full.conj())
 rhoA0 = np.outer(psiA0, psiA0.conj())
 
 # 4. Unitary Matrix
-U_cycle = U_Zanc @ U_iswap @ U_sys
+U_cycle = U_iswap @ U_Zanc @ U_sys
 Udag_cycle = U_cycle.conj().T
 
 # 5. Reference Energy from Hamiltonian Diagonalization
@@ -79,13 +79,15 @@ for n in range(d):
     rho = U_cycle @ rho @ Udag_cycle
 
     if (n+1) % reset_freq == 0:
-        rho4 = rho.reshape(dimA, dimS, dimA, dimS)
-        rhoS = np.einsum("asat->st", rho4)
-        rho = np.kron(rhoA0, rhoS)
+        rho4 = rho.reshape(dimS, dimA, dimS, dimA)             # (s,a,t,a)
+        rhoS = np.einsum("sata->st", rho4)  
+        rho = np.kron(rhoS, rhoA0)
 
         E = np.real(np.trace(rho @ Hsys.toarray()))
         E_list.append(E/E0)
         d_list.append(n)
+
+print(f"E/E_0 at d = {d_list[-1]}: {E_list[-1]}")
 
 def store_data(npz_path, g_per_J, d_list, E_list):
     
@@ -111,7 +113,7 @@ def store_data(npz_path, g_per_J, d_list, E_list):
         E_mat = np.array([E_list])
         np.savez(npz_path, g_per_J=g_per_J, d_mat=d_mat, E_mat=E_mat)
 
-def plot_data(npz_path):
+def plot_data(npz_path, plot_path):
     # Plotting
     data = np.load(npz_path)
     g_per_J = data["g_per_J"]
@@ -119,9 +121,10 @@ def plot_data(npz_path):
     E_mat = data["E_mat"]
 
     for i, g_val in enumerate(g_per_J):
-        plt.plot(d_mat[i], E_mat[i], marker="o", label=f"g/J={g_val}")
+        plt.plot(d_mat[i], E_mat[i], label=f"g/J={g_val}")
     plt.xlabel("cycle number, d", fontsize=16)
     plt.ylabel(r"$E/E_0$", fontsize=16)
+    plt.xlim(left=0.0)
     plt.ylim(bottom=0.0)
     plt.xticks(fontsize=16)
     plt.yticks(fontsize=16)
@@ -129,8 +132,8 @@ def plot_data(npz_path):
     plt.grid()
     plt.tight_layout()
     plt.legend(ncol=3, loc="upper center", bbox_to_anchor=(0.5, -0.15))
-    plt.savefig(f"TFIM_dissipative.png", bbox_inches="tight")
+    plt.savefig(plot_path, bbox_inches="tight")
 
-npz_path = "cooling_log.npz"
+npz_path = "cooling_log4.npz"; plot_path = "TFIM_dissipative4.png"
 store_data(npz_path, g_per_J, d_list, E_list)
-plot_data(npz_path)
+plot_data(npz_path, plot_path)
