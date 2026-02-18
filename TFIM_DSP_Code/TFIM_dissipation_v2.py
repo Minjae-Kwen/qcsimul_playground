@@ -1,32 +1,13 @@
 import os
 import numpy as np
-import cupy as cp
 import scipy.linalg as la
 from quspin.operators import hamiltonian
 from quspin.basis import spin_basis_1d
 from quspin.tools.Floquet import Floquet
 import matplotlib.pyplot as plt
-from tqdm import tqdm
-
-# Initial parameters
-L, M = 6, 2 # Spin 0-5: System / Spin 6-7: Ancilla
-dimS = 2**L; dimA = 2**M
-d = 100
-t_unit = np.pi/2
-T = t_unit * d
-
-g_per_J = 0.4
-J = 0.2
-g = g_per_J * J
-
-reset_freq = 4
-
-#h = (1.65/1.887) * np.sqrt(1.0 + g_per_J**2)
-#theta = 0.11*np.pi
-h_list = np.linspace(1.0, 3.0, 21)
-theta_over_pi_list = np.linspace(0.05, 0.35, 31)
 
 # Method Definition
+
 def prep_tEvolution(L, M, g, J, h, theta):
     Ltot = L + M
     #dimS = 2**L; dimA = 2**M
@@ -94,101 +75,44 @@ def auxiliary_method(Hsys, L, M, t_unit):
 
     return E0, psi0
 
-def run_grid_cupy(h_list, theta_over_pi_list,
-                  L, M, g, J, d, reset_freq, t_unit,
-                  batch_size=None, use_complex64=True):
+# Initial parameters
+L, M = 6, 2 # Spin 0-5: System / Spin 6-7: Ancilla
+dimS = 2**L; dimA = 2**M
+d = 500
+t_unit = np.pi/2
+T = t_unit * d
 
-    # ---- sizes ----
-    dimS = 2**L
-    dimA = 2**M
-    D = dimS * dimA
+g_per_J = 1.0
+J = 0.2
+g = g_per_J * J
 
-    n_th = len(theta_over_pi_list)
-    n_h  = len(h_list)
-    P = n_th * n_h
+reset_freq = 4
 
-    ctype = cp.complex64 if use_complex64 else cp.complex128
-    rtype = cp.float32   if use_complex64 else cp.float64
+#h = (1.65/1.887) * np.sqrt(1.0 + g_per_J**2)
+#theta = 0.11*np.pi
+h_list = np.linspace(1.0, 2.0, 11)
+theta_over_pi_list = np.linspace(0.05, 0.25, 21)
+E_E0_mat = np.zeros((len(theta_over_pi_list), len(h_list)), dtype=np.float64)
 
-    # ---- (1) CPU에서 U_cycle, Hsys, E0를 만들어서 쌓기 (여긴 아직 CPU 루프) ----
-    U_list  = []
-    H_list  = []
-    E0_list = []
+for i, theta_over_pi in enumerate(theta_over_pi_list):
+    theta = theta_over_pi * np.pi
+    for j, h in enumerate(h_list):
+        U_cycle, Hsys = prep_tEvolution(L, M, g, J, h, theta)
+        Udag_cycle = U_cycle.conj().T
 
-    for theta_over_pi in theta_over_pi_list:
-        theta = theta_over_pi * np.pi
-        for h in h_list:
-            U_cycle, Hsys = prep_tEvolution(L, M, g, J, h, theta)
-            
-            U_np = np.asarray(U_cycle, dtype=np.complex128)
-            H_np = np.asarray(Hsys.toarray(), dtype=np.float64)
-
-            E0, _ = auxiliary_method(Hsys, L, M, t_unit)
-
-            U_list.append(U_np)
-            H_list.append(H_np)
-            E0_list.append(E0)
-
-    U_np  = np.stack(U_list, axis=0)                # (P, D, D)
-    H_np  = np.stack(H_list, axis=0)                # (P, D, D)
-    E0_np = np.array(E0_list, dtype=np.float64)     # (P,)
-
-    # ---- (2) 초기 상태 (CPU -> GPU) ----
-    rho0_np, rhoA0_np = prep_initial_state(L, M)    # 네 함수
-    rho0_cp  = cp.asarray(rho0_np, dtype=ctype)     # (D, D)
-    rhoA0_cp = cp.asarray(rhoA0_np, dtype=ctype)    # (dimA, dimA)
-
-    # ---- (3) 배치 계산 (메모리 아끼려면 chunk 처리 가능) ----
-    if batch_size is None:
-        batch_size = P  # 한 번에
-
-    out = np.empty(P, dtype=np.float64)
-
-    for s in range(0, P, batch_size):
-        e = min(P, s + batch_size)
-        B = e - s
-
-        U  = cp.asarray(U_np[s:e], dtype=ctype)                # (B, D, D)
-        H  = cp.asarray(H_np[s:e], dtype=ctype)                # (B, D, D) -> complex로 맞춰둠
-        E0 = cp.asarray(E0_np[s:e], dtype=cp.float64)          # (B,)
-
-        Udag = cp.swapaxes(U.conj(), -1, -2)                   # (B, D, D)
-
-        # rho 배치: 동일 초기 rho0를 B개 복제
-        rho = cp.broadcast_to(rho0_cp, (B, D, D)).copy()
+        rho, rhoA0 = prep_initial_state(L, M)
+        E0, _ = auxiliary_method(Hsys, L, M, t_unit)
 
         for n in range(d):
-            # rho = U rho U†  (batched matmul)
-            rho = cp.matmul(U, cp.matmul(rho, Udag))
+            rho = U_cycle @ rho @ Udag_cycle
 
-            if (n + 1) % reset_freq == 0:
-                # S ⊗ A 순서 가정: (s,a,t,a)
-                rho4 = rho.reshape(B, dimS, dimA, dimS, dimA)
-                rhoS = cp.einsum("bsata->bst", rho4)  # trace over ancilla 'a'
-
-                # rho <- rhoS ⊗ rhoA0  (배치 kron: cp.kron은 배치 안 됨 -> broadcasting으로 구현)
-                rho = (rhoS[:, :, None, :, None] * rhoA0_cp[None, None, :, None, :]).reshape(B, D, D)
-
-        # E = Tr(rho H)
-        # batched trace: sum_{i,j} rho_{ij} H_{ji}
-        E = cp.real(cp.einsum("bij,bji->b", rho, H))
-        val = (E / E0).get()   # GPU -> CPU
-        out[s:e] = val
-
-    # ---- (4) (n_th, n_h)로 reshape ----
-    E_E0_mat = out.reshape(n_th, n_h)
-
-    idx = np.nanargmax(E_E0_mat)
-    i,j = np.unravel_index(idx, E_E0_mat.shape)
-    Emax = E_E0_mat[i, j]
-    theta_at_max = theta_over_pi_list[i] * np.pi
-    h_at_max = h_list[j]
-
-    return E_E0_mat, Emax, theta_at_max, h_at_max
- 
-E_E0_mat = np.zeros((len(theta_over_pi_list), len(h_list)), dtype=np.float64)
-E_E0_mat, Emax, theta_at_max, h_at_max = run_grid_cupy(h_list, theta_over_pi_list, L, M, g, J, d, reset_freq, t_unit)
-print(f"Max E/E0 = {Emax:.4f} at theta/pi = {theta_at_max/np.pi:.3f}, h = {h_at_max:.3f}")
+            if (n+1) % reset_freq == 0:
+                rho4 = rho.reshape(dimS, dimA, dimS, dimA)             # (s,a,t,a)
+                rhoS = np.einsum("sata->st", rho4)  
+                rho = np.kron(rhoS, rhoA0)
+            
+        E = np.real(np.trace(rho @ Hsys.toarray()))
+        E_E0_mat[i, j] = E/E0
 
 ############################################
 
@@ -251,24 +175,8 @@ def plot_heatmap(theta_over_pi_list, h_list, E_E0_mat, plot_path):
     ax.set_xlabel("h")
     ax.set_ylabel(r"$\theta/\pi$ (rad)")
 
-    ax.text(
-        0.03, 0.97,
-        f" J = {J:.2f},\ng = {g:.2f},\nd = {d}",
-        transform=ax.transAxes,
-        ha="left", va="top",
-        color="white", fontsize=9, 
-    )
-
-    ax.text(
-        0.55, 0.35,
-        f"E = {Emax:.4f},\nθ/π = {theta_at_max/np.pi:.2f},\nh = {h_at_max:.2f}",
-        transform=ax.transAxes,
-        ha="left", va="top",
-        color="white", fontsize=7, 
-    )
-
     cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label(r"$E/E_0$")
+    cbar.set_label("E/E0")
 
     plt.tight_layout()
     plt.savefig(plot_path, bbox_inches="tight")

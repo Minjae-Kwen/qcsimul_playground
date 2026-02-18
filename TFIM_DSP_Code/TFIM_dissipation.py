@@ -6,11 +6,16 @@ from quspin.basis import spin_basis_1d
 from quspin.tools.Floquet import Floquet
 import matplotlib.pyplot as plt 
 
+g_per_J_list = [0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6]
+h_list = [1.61, 1.60, 1.60, 1.65, 1.68, 1.68, 1.69]
+theta_over_pi_list = [0.10, 0.10, 0.10, 0.10, 0.10, 0.12, 0.15]
+#E_mat_d100 = [0.9340, 0.9363, 0.9195, 0.8941, 0.8901, 0.9088, 0.9077]
+
 # Initial parameters
 L, M = 6, 2 # Spin 0-5: System / Spin 6-7: Ancilla
 g_per_J = 1.6
 d = 160
-h = 2.4 #(1.65/1.887) * np.sqrt(1.0 + g_per_J**2)
+h = 1.65 
 theta = 0.14*np.pi
 
 Ltot = L + M
@@ -46,7 +51,8 @@ U_sys = np.kron(np.eye(dimA, dtype=complex), Floq.UF)  # Ancilla identity x Syst
 # 2. Ancilla Unitary Operators
 z_anc_list = [[1.0, i+L] for i in range(M)]
 Zanc = hamiltonian([["z", z_anc_list]], [], basis=basis, dtype=np.float64)
-U_Zanc = la.expm(1j * (np.pi*h/2) * Zanc.toarray())
+#U_Zanc = la.expm(1j * (np.pi*h/2) * Zanc.toarray())
+U_Zanc = la.expm(1j * (np.pi*(h - 0.5)) * Zanc.toarray())
 
 iswap_pairs = [[1.0, 0, L], [1.0, L-1, L+1]]
 H_iswap = hamiltonian([["xx", iswap_pairs], ["yy", iswap_pairs]], [], basis=basis, dtype=np.float64)
@@ -76,6 +82,11 @@ print(f"E0 = {E0}")
 reset_freq = 4
 E_list = []; d_list = []
 for n in range(d):
+    if n == 0:
+        E = np.real(np.trace(rho @ Hsys.toarray()))
+        E_list.append(E/E0)
+        d_list.append(n)
+    
     rho = U_cycle @ rho @ Udag_cycle
 
     if (n+1) % reset_freq == 0:
@@ -83,9 +94,9 @@ for n in range(d):
         rhoS = np.einsum("sata->st", rho4)  
         rho = np.kron(rhoS, rhoA0)
 
-        E = np.real(np.trace(rho @ Hsys.toarray()))
-        E_list.append(E/E0)
-        d_list.append(n)
+    E = np.real(np.trace(rho @ Hsys.toarray()))
+    E_list.append(E/E0)
+    d_list.append(n+1)
 
 print(f"E/E_0 at d = {d_list[-1]}: {E_list[-1]}")
 
@@ -131,7 +142,7 @@ def plot_data(npz_path, plot_path):
     plt.legend(fontsize=16)
     plt.grid()
     plt.tight_layout()
-    plt.legend(ncol=3, loc="upper center", bbox_to_anchor=(0.5, -0.15))
+    plt.legend(ncol=2, loc="upper center", bbox_to_anchor=(0.7, 0.4))
     plt.savefig(plot_path, bbox_inches="tight")
 
 npz_path = "cooling_log4.npz"; plot_path = "TFIM_dissipative4.png"
